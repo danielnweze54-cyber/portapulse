@@ -20,6 +20,7 @@ function setup({ ensureNetwork = async () => {}, onAccountsRequest } = {}) {
   const walletAttemptRef = { current: 0 };
   const walletEventAccountRef = { current: null };
   const walletEventSeenRef = { current: false };
+  const walletAccountEventRef = { current: 0 };
   const state = {
     account: null,
     verified: false,
@@ -43,13 +44,22 @@ function setup({ ensureNetwork = async () => {}, onAccountsRequest } = {}) {
     walletAttemptRef,
     walletEventAccountRef,
     walletEventSeenRef,
+    walletAccountEventRef,
     getInjectedWallet: () => wallet,
     ensurePortaldotTestnet: ensureNetwork,
     targetChainId: TARGET_CHAIN,
-    setWalletAccount: (value) => { state.account = value; },
-    setWalletVerified: (value) => { state.verified = value; },
-    setWalletBusy: (value) => { state.busy = value; },
-    setWalletMessage: (value) => { state.message = value; },
+    setWalletAccount: (value) => {
+      state.account = value;
+    },
+    setWalletVerified: (value) => {
+      state.verified = value;
+    },
+    setWalletBusy: (value) => {
+      state.busy = value;
+    },
+    setWalletMessage: (value) => {
+      state.message = value;
+    },
   });
 
   return {
@@ -57,6 +67,7 @@ function setup({ ensureNetwork = async () => {}, onAccountsRequest } = {}) {
     walletAttemptRef,
     walletEventAccountRef,
     walletEventSeenRef,
+    walletAccountEventRef,
     state,
   };
 }
@@ -110,11 +121,43 @@ test("accepts the matching accountsChanged event during initial wallet approval"
     onAccountsRequest: () => {
       app.walletEventSeenRef.current = true;
       app.walletEventAccountRef.current = ACCOUNT_A;
-      app.walletAttemptRef.current += 1;
+      app.walletAccountEventRef.current += 1;
     },
   });
 
   await app.handleConnectWallet();
+
+  assert.equal(app.state.account, ACCOUNT_A);
+  assert.equal(app.state.verified, true);
+  assert.equal(app.state.busy, false);
+});
+
+test("does not let an older connection attempt overwrite a newer successful attempt", async () => {
+  const oldGate = deferred();
+  const newGate = deferred();
+  let verificationCount = 0;
+
+  const app = setup({
+    ensureNetwork: () => {
+      verificationCount += 1;
+      return verificationCount === 1 ? oldGate.promise : newGate.promise;
+    },
+  });
+
+  const oldConnection = app.handleConnectWallet();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const newConnection = app.handleConnectWallet();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  newGate.resolve();
+  await newConnection;
+
+  assert.equal(app.state.account, ACCOUNT_A);
+  assert.equal(app.state.verified, true);
+
+  oldGate.resolve();
+  await oldConnection;
 
   assert.equal(app.state.account, ACCOUNT_A);
   assert.equal(app.state.verified, true);
@@ -134,4 +177,26 @@ test("completes verification after a normal network switch", async () => {
   assert.equal(app.state.verified, true);
   assert.equal(app.state.busy, false);
   assert.match(app.state.message, /connected and verified/);
+});
+
+test("does not clear a new account when network verification rejects after an account change", async () => {
+  const gate = deferred();
+  const app = setup({ ensureNetwork: () => gate.promise });
+
+  const connection = app.handleConnectWallet();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  app.walletAccountEventRef.current += 1;
+  app.walletEventSeenRef.current = true;
+  app.walletEventAccountRef.current = ACCOUNT_B;
+  app.state.account = ACCOUNT_B;
+  app.state.verified = false;
+  app.state.busy = false;
+
+  gate.reject(new Error("Network verification failed"));
+  await connection;
+
+  assert.equal(app.state.account, ACCOUNT_B);
+  assert.equal(app.state.verified, false);
+  assert.equal(app.state.busy, false);
 });

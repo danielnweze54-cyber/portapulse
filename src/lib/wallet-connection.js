@@ -2,6 +2,7 @@ export function createWalletConnectionHandler({
   walletAttemptRef,
   walletEventAccountRef,
   walletEventSeenRef,
+  walletAccountEventRef,
   getInjectedWallet,
   ensurePortaldotTestnet,
   targetChainId,
@@ -11,7 +12,7 @@ export function createWalletConnectionHandler({
   setWalletMessage,
 }) {
   return async function handleConnectWallet() {
-    let attemptId = ++walletAttemptRef.current;
+    const attemptId = ++walletAttemptRef.current;
     const isCurrentAttempt = () => attemptId === walletAttemptRef.current;
 
     setWalletMessage("");
@@ -27,6 +28,8 @@ export function createWalletConnectionHandler({
     }
 
     setWalletBusy(true);
+    const accountEventVersion = walletAccountEventRef.current;
+    let approvedEventVersion = accountEventVersion;
 
     try {
       const accounts = await wallet.request({ method: "eth_requestAccounts" });
@@ -37,6 +40,7 @@ export function createWalletConnectionHandler({
 
       const requestedAccount = accounts[0];
       const eventAccount = walletEventAccountRef.current;
+      approvedEventVersion = walletAccountEventRef.current;
 
       if (
         walletEventSeenRef.current &&
@@ -46,12 +50,22 @@ export function createWalletConnectionHandler({
         throw new Error("The active wallet account changed. Please reconnect.");
       }
 
-      // Allow a matching accountsChanged event from initial wallet approval.
-      attemptId = walletAttemptRef.current;
+      // A matching accountsChanged event during initial approval is allowed,
+      // but this attempt must never adopt a newer attempt's ID.
+      if (!isCurrentAttempt()) return;
+      if (walletAccountEventRef.current !== approvedEventVersion) return;
+      if (
+        approvedEventVersion !== accountEventVersion &&
+        (!eventAccount ||
+          eventAccount.toLowerCase() !== requestedAccount.toLowerCase())
+      ) {
+        throw new Error("The active wallet account changed. Please reconnect.");
+      }
       setWalletBusy(true);
 
       await ensurePortaldotTestnet(wallet);
       if (!isCurrentAttempt()) return;
+      if (walletAccountEventRef.current !== approvedEventVersion) return;
 
       const [activeAccounts, activeChain] = await Promise.all([
         wallet.request({ method: "eth_accounts" }),
@@ -59,6 +73,16 @@ export function createWalletConnectionHandler({
       ]);
 
       if (!isCurrentAttempt()) return;
+      if (walletAccountEventRef.current !== approvedEventVersion) return;
+
+      const latestEventAccount = walletEventAccountRef.current;
+      if (
+        walletEventSeenRef.current &&
+        (!latestEventAccount ||
+          latestEventAccount.toLowerCase() !== requestedAccount.toLowerCase())
+      ) {
+        throw new Error("The active wallet account changed. Please reconnect.");
+      }
 
       if (
         !Array.isArray(activeAccounts) ||
@@ -72,14 +96,19 @@ export function createWalletConnectionHandler({
         typeof activeChain !== "string" ||
         BigInt(activeChain) !== BigInt(targetChainId)
       ) {
-        throw new Error("Wallet is no longer connected to Portaldot V3 Testnet.");
+        throw new Error(
+          "Wallet is no longer connected to Portaldot V3 Testnet.",
+        );
       }
 
       setWalletAccount(requestedAccount);
       setWalletVerified(true);
-      setWalletMessage("Wallet connected and verified on Portaldot V3 Testnet.");
+      setWalletMessage(
+        "Wallet connected and verified on Portaldot V3 Testnet.",
+      );
     } catch (error) {
       if (!isCurrentAttempt()) return;
+      if (walletAccountEventRef.current !== approvedEventVersion) return;
 
       setWalletAccount(null);
       setWalletVerified(false);

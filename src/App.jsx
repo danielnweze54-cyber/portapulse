@@ -1,4 +1,5 @@
 import { createWalletConnectionHandler } from "./lib/wallet-connection.js";
+import { createWalletEventHandlers } from "./lib/wallet-events.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
@@ -39,7 +40,9 @@ const WEBHOOK_STORAGE_KEY = "portapulse.webhook";
 const PROOF_STORAGE_KEY = "portapulse.evmProof";
 
 function formatBlock(number) {
-  return number === null || number === undefined ? "—" : `#${number.toLocaleString("en-US")}`;
+  return number === null || number === undefined
+    ? "—"
+    : `#${number.toLocaleString("en-US")}`;
 }
 
 function formatBlockTime(samples) {
@@ -48,28 +51,47 @@ function formatBlockTime(samples) {
   const median = sorted[Math.floor(sorted.length / 2)];
   const filtered = samples.filter((value) => value <= median * 3);
   if (filtered.length < 2) return null;
-  const mean = filtered.reduce((total, value) => total + value, 0) / filtered.length;
+  const mean =
+    filtered.reduce((total, value) => total + value, 0) / filtered.length;
   return mean;
 }
 
 function StatusPill({ status, chain }) {
   const map = {
     connecting: { text: "Connecting…", color: "text-amber-400", icon: Radio },
-    connected: { text: chain ? `Live: ${chain}` : "Connected", color: "text-[#00E599]", icon: Radio },
-    error: { text: "Connection failed", color: "text-rose-400", icon: AlertTriangle },
+    connected: {
+      text: chain ? `Live: ${chain}` : "Connected",
+      color: "text-[#00E599]",
+      icon: Radio,
+    },
+    error: {
+      text: "Connection failed",
+      color: "text-rose-400",
+      icon: AlertTriangle,
+    },
     idle: { text: "Disconnected", color: "text-slate-400", icon: Radio },
   };
   const entry = map[status] ?? map.idle;
   const Icon = entry.icon;
   return (
     <div className="flex items-center gap-2 bg-[#151A23] border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-mono">
-      <Icon className={`w-3.5 h-3.5 ${entry.color} ${status === "connecting" ? "animate-pulse" : ""}`} />
+      <Icon
+        className={`w-3.5 h-3.5 ${entry.color} ${status === "connecting" ? "animate-pulse" : ""}`}
+      />
       <span className="max-w-[240px] truncate">{entry.text}</span>
     </div>
   );
 }
 
-function MetricCard({ label, icon, iconColor, value, valueColor, footnote, footnoteIcon }) {
+function MetricCard({
+  label,
+  icon,
+  iconColor,
+  value,
+  valueColor,
+  footnote,
+  footnoteIcon,
+}) {
   const FootnoteIcon = footnoteIcon;
   return (
     <div className="bg-[#151A23] border border-slate-800/80 hover:border-slate-700 p-5 rounded-2xl transition">
@@ -77,7 +99,9 @@ function MetricCard({ label, icon, iconColor, value, valueColor, footnote, footn
         <span>{label}</span>
         <span className={iconColor}>{icon}</span>
       </div>
-      <div className={`text-3xl font-extrabold font-mono tracking-wider ${valueColor ?? "text-white"}`}>
+      <div
+        className={`text-3xl font-extrabold font-mono tracking-wider ${valueColor ?? "text-white"}`}
+      >
         {value}
       </div>
       <div className="text-[11px] text-slate-400 mt-2 flex items-center gap-1 font-mono">
@@ -121,9 +145,12 @@ export default function App() {
   const walletAttemptRef = useRef(0);
   const walletEventAccountRef = useRef(null);
   const walletEventSeenRef = useRef(false);
+  const walletAccountEventRef = useRef(0);
   const [proof, setProof] = useState(() => {
     try {
-      return JSON.parse(window.localStorage.getItem(PROOF_STORAGE_KEY) ?? "null");
+      return JSON.parse(
+        window.localStorage.getItem(PROOF_STORAGE_KEY) ?? "null",
+      );
     } catch {
       return null;
     }
@@ -139,43 +166,30 @@ export default function App() {
   }, [paused]);
 
   useEffect(() => {
-  const wallet = getInjectedWallet();
-  if (!wallet?.on) return undefined;
+    const wallet = getInjectedWallet();
+    if (!wallet?.on) return undefined;
 
-  const handleAccountsChanged = (accounts) => {
-    walletAttemptRef.current += 1;
-    const account =
-      Array.isArray(accounts) && typeof accounts[0] === "string"
-        ? accounts[0]
-        : null;
+    const { handleAccountsChanged, handleChainChanged } =
+      createWalletEventHandlers({
+        walletAttemptRef,
+        walletAccountEventRef,
+        walletEventAccountRef,
+        walletEventSeenRef,
+        targetChainId: PORTALDOT_TESTNET.chainId,
+        setWalletAccount,
+        setWalletVerified,
+        setWalletBusy,
+        setWalletMessage,
+      });
 
-    walletEventSeenRef.current = true;
-    walletEventAccountRef.current = account;
-    setWalletBusy(false);
-    setWalletAccount(account);
-    setWalletVerified(false);
-    setWalletMessage(
-      account
-        ? "Account changed. Reconnect and verify the Portaldot V3 Testnet."
-        : "Wallet disconnected."
-    );
-  };
+    wallet.on("accountsChanged", handleAccountsChanged);
+    wallet.on("chainChanged", handleChainChanged);
 
-  const handleChainChanged = () => {
-    setWalletVerified(false);
-    setWalletMessage(
-      "Network changed. Reconnect to verify Portaldot V3 Testnet."
-    );
-  };
-
-  wallet.on("accountsChanged", handleAccountsChanged);
-  wallet.on("chainChanged", handleChainChanged);
-
-  return () => {
-    wallet.removeListener?.("accountsChanged", handleAccountsChanged);
-    wallet.removeListener?.("chainChanged", handleChainChanged);
-  };
-}, []);
+    return () => {
+      wallet.removeListener?.("accountsChanged", handleAccountsChanged);
+      wallet.removeListener?.("chainChanged", handleChainChanged);
+    };
+  }, []);
 
   const endpoint = getEndpoint(endpointId);
 
@@ -194,9 +208,8 @@ export default function App() {
       lastHeadAtRef.current = null;
 
       try {
-        const { connectApi, fetchChainInfo, fetchLatestBlockStats } = await import(
-          "./lib/portaldot.js"
-        );
+        const { connectApi, fetchChainInfo, fetchLatestBlockStats } =
+          await import("./lib/portaldot.js");
         const { api } = await connectApi(endpoint);
         if (cancelled) {
           await api.disconnect();
@@ -218,7 +231,9 @@ export default function App() {
           const now = performance.now();
           if (lastHeadAtRef.current !== null) {
             const deltaSeconds = (now - lastHeadAtRef.current) / 1000;
-            setBlockSamples((previous) => [...previous, deltaSeconds].slice(-MAX_BLOCK_SAMPLES));
+            setBlockSamples((previous) =>
+              [...previous, deltaSeconds].slice(-MAX_BLOCK_SAMPLES),
+            );
           }
           lastHeadAtRef.current = now;
           setBestBlock(header.number.toNumber());
@@ -232,7 +247,8 @@ export default function App() {
               apiRef.current.rpc.chain.getBlock(),
             ]);
             if (cancelled) return;
-            const finalizedHeader = await apiRef.current.rpc.chain.getHeader(hash);
+            const finalizedHeader =
+              await apiRef.current.rpc.chain.getHeader(hash);
             if (cancelled) return;
             setFinalizedBlock(finalizedHeader.number.toNumber());
             setHeadStats({
@@ -250,7 +266,9 @@ export default function App() {
       } catch (error) {
         if (cancelled) return;
         setStatus("error");
-        setStatusMessage(error instanceof Error ? error.message : String(error));
+        setStatusMessage(
+          error instanceof Error ? error.message : String(error),
+        );
       }
     }
 
@@ -278,7 +296,9 @@ export default function App() {
     setBenchmarking(true);
     try {
       const { benchmarkEndpoint } = await import("./lib/portaldot.js");
-      const results = await Promise.all(ENDPOINTS.map((item) => benchmarkEndpoint(item)));
+      const results = await Promise.all(
+        ENDPOINTS.map((item) => benchmarkEndpoint(item)),
+      );
       setBenchmarks((previous) => {
         const next = { ...previous };
         results.forEach((result) => {
@@ -292,7 +312,10 @@ export default function App() {
   }, []);
 
   const averageBlockTime = formatBlockTime(blockSamples);
-  const finalityLag = bestBlock !== null && finalizedBlock !== null ? bestBlock - finalizedBlock : null;
+  const finalityLag =
+    bestBlock !== null && finalizedBlock !== null
+      ? bestBlock - finalizedBlock
+      : null;
 
   const handleEstimate = (event) => {
     event.preventDefault();
@@ -324,6 +347,7 @@ export default function App() {
       walletAttemptRef,
       walletEventAccountRef,
       walletEventSeenRef,
+      walletAccountEventRef,
       getInjectedWallet,
       ensurePortaldotTestnet,
       targetChainId: PORTALDOT_TESTNET.chainId,
@@ -340,7 +364,9 @@ export default function App() {
     setWalletMessage("");
     const wallet = getInjectedWallet();
     if (!wallet || !walletAccount || !walletVerified) {
-      setWalletMessage("Connect your wallet before deploying the proof contract.");
+      setWalletMessage(
+        "Connect your wallet before deploying the proof contract.",
+      );
       return;
     }
 
@@ -351,17 +377,26 @@ export default function App() {
         walletAccount,
         PORTAPULSE_PROOF_BYTECODE,
       );
-      const nextProof = { ...deployment, owner: walletAccount, pulseTxHash: null };
+      const nextProof = {
+        ...deployment,
+        owner: walletAccount,
+        pulseTxHash: null,
+      };
       setProof(nextProof);
       try {
-        window.localStorage.setItem(PROOF_STORAGE_KEY, JSON.stringify(nextProof));
+        window.localStorage.setItem(
+          PROOF_STORAGE_KEY,
+          JSON.stringify(nextProof),
+        );
       } catch {
         setWalletMessage(
           `Deployment confirmed. Copy the contract address ${deployment.contractAddress} and transaction ${deployment.hash}; browser storage is unavailable.`,
         );
         return;
       }
-      setWalletMessage("Contract deployed and confirmed on Portaldot V3 Testnet.");
+      setWalletMessage(
+        "Contract deployed and confirmed on Portaldot V3 Testnet.",
+      );
     } catch (error) {
       setWalletMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -372,12 +407,21 @@ export default function App() {
   const handleSendProof = async () => {
     setWalletMessage("");
     const wallet = getInjectedWallet();
-    if (!wallet || !walletAccount || !walletVerified || !proof?.contractAddress) {
-      setWalletMessage("Connect your wallet and deploy the proof contract first.");
+    if (
+      !wallet ||
+      !walletAccount ||
+      !walletVerified ||
+      !proof?.contractAddress
+    ) {
+      setWalletMessage(
+        "Connect your wallet and deploy the proof contract first.",
+      );
       return;
     }
     if (proof.owner.toLowerCase() !== walletAccount.toLowerCase()) {
-      setWalletMessage("Reconnect the wallet that deployed this contract to send its proof transaction.");
+      setWalletMessage(
+        "Reconnect the wallet that deployed this contract to send its proof transaction.",
+      );
       return;
     }
 
@@ -392,9 +436,14 @@ export default function App() {
       const nextProof = { ...proof, pulseTxHash: hash };
       setProof(nextProof);
       try {
-        window.localStorage.setItem(PROOF_STORAGE_KEY, JSON.stringify(nextProof));
+        window.localStorage.setItem(
+          PROOF_STORAGE_KEY,
+          JSON.stringify(nextProof),
+        );
       } catch {
-        setWalletMessage(`Pulse transaction confirmed. Copy the transaction hash ${hash}; browser storage is unavailable.`);
+        setWalletMessage(
+          `Pulse transaction confirmed. Copy the transaction hash ${hash}; browser storage is unavailable.`,
+        );
         return;
       }
       setWalletMessage("Pulse transaction confirmed on Portaldot V3 Testnet.");
@@ -414,12 +463,18 @@ export default function App() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold tracking-tight text-white">PortaPulse</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-white">
+                PortaPulse
+              </h1>
               <span className="text-xs bg-emerald-500/10 text-[#00E599] border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono">
-                {chainInfo?.specVersion ? `Spec ${chainInfo.specVersion}` : "Portaldot"}
+                {chainInfo?.specVersion
+                  ? `Spec ${chainInfo.specVersion}`
+                  : "Portaldot"}
               </span>
             </div>
-            <p className="text-xs text-slate-400">Node Operations &amp; Telemetry Suite for Portaldot</p>
+            <p className="text-xs text-slate-400">
+              Node Operations &amp; Telemetry Suite for Portaldot
+            </p>
           </div>
         </div>
 
@@ -443,7 +498,9 @@ export default function App() {
             className="bg-[#151A23] hover:bg-slate-800 border border-slate-700 p-2 rounded-lg text-slate-300 transition"
             title={paused ? "Resume live updates" : "Pause live updates"}
           >
-            <RefreshCw className={`w-4 h-4 ${paused ? "text-slate-400" : "text-[#00E599]"}`} />
+            <RefreshCw
+              className={`w-4 h-4 ${paused ? "text-slate-400" : "text-[#00E599]"}`}
+            />
           </button>
         </div>
       </header>
@@ -453,8 +510,12 @@ export default function App() {
           <div className="bg-rose-500/5 border border-rose-500/30 rounded-2xl p-4 flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
             <div className="text-xs">
-              <div className="text-rose-300 font-semibold">Could not connect to {endpoint.label}</div>
-              <div className="text-slate-400 mt-1 font-mono">{statusMessage}</div>
+              <div className="text-rose-300 font-semibold">
+                Could not connect to {endpoint.label}
+              </div>
+              <div className="text-slate-400 mt-1 font-mono">
+                {statusMessage}
+              </div>
             </div>
           </div>
         )}
@@ -479,7 +540,11 @@ export default function App() {
             label="AVG BLOCK TIME"
             icon={<Clock className="w-4 h-4" />}
             iconColor="text-emerald-400"
-            value={averageBlockTime === null ? "—" : `${averageBlockTime.toFixed(2)}s`}
+            value={
+              averageBlockTime === null
+                ? "—"
+                : `${averageBlockTime.toFixed(2)}s`
+            }
             footnote={
               averageBlockTime === null
                 ? `Measuring… (${blockSamples.length}/${MAX_BLOCK_SAMPLES} samples)`
@@ -494,7 +559,11 @@ export default function App() {
             iconColor="text-amber-400"
             value={headStats ? String(headStats.extrinsicCount) : "—"}
             valueColor="text-[#00E599]"
-            footnote={headStats ? `Block ${formatBlock(headStats.number)}` : "Awaiting first block"}
+            footnote={
+              headStats
+                ? `Block ${formatBlock(headStats.number)}`
+                : "Awaiting first block"
+            }
             footnoteIcon={Layers}
           />
 
@@ -531,7 +600,9 @@ export default function App() {
                 disabled={benchmarking}
                 className="bg-emerald-500/10 hover:bg-emerald-500/20 text-[#00E599] border border-emerald-500/30 text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition disabled:opacity-50"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${benchmarking ? "animate-spin" : ""}`} />
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${benchmarking ? "animate-spin" : ""}`}
+                />
                 {benchmarking ? "Testing…" : "Run Test"}
               </button>
             </div>
@@ -545,9 +616,15 @@ export default function App() {
                     className="bg-[#0B0E14] border border-slate-800/80 p-3.5 rounded-xl flex items-center justify-between"
                   >
                     <div className="truncate max-w-[260px]">
-                      <div className="text-xs font-mono text-slate-200 truncate">{item.label}</div>
+                      <div className="text-xs font-mono text-slate-200 truncate">
+                        {item.label}
+                      </div>
                       <div className="text-[10px] text-slate-500 uppercase mt-0.5">
-                        {result?.ok ? result.chain : result ? result.error : "Not tested yet"}
+                        {result?.ok
+                          ? result.chain
+                          : result
+                            ? result.error
+                            : "Not tested yet"}
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
@@ -587,7 +664,9 @@ export default function App() {
 
             <div className="mt-5 space-y-4">
               <div>
-                <label className="text-xs text-slate-400 mb-1.5 block">Planned Transaction Load</label>
+                <label className="text-xs text-slate-400 mb-1.5 block">
+                  Planned Transaction Load
+                </label>
                 <div className="flex gap-2">
                   {[5, 10, 25, 50].map((num) => (
                     <button
@@ -620,7 +699,10 @@ export default function App() {
                     <CheckCircle2 className="w-4 h-4" /> Plan Ready
                   </div>
                   <div className="text-slate-400">
-                    Planned: <span className="text-slate-200">{estimate.txs} transactions</span>
+                    Planned:{" "}
+                    <span className="text-slate-200">
+                      {estimate.txs} transactions
+                    </span>
                   </div>
                   <div className="text-slate-400">
                     Observed head size:{" "}
@@ -638,7 +720,9 @@ export default function App() {
                         : "—"}
                     </span>
                   </div>
-                  <div className="text-[10px] text-slate-500 pt-1 leading-relaxed">{estimate.note}</div>
+                  <div className="text-[10px] text-slate-500 pt-1 leading-relaxed">
+                    {estimate.note}
+                  </div>
                 </div>
               )}
             </div>
@@ -653,12 +737,17 @@ export default function App() {
                 Testnet Wallet &amp; On-chain Proof
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Connect MetaMask, verify Portaldot V3 Testnet, deploy the proof contract, and submit a signed pulse transaction. No private key is requested or stored.
+                Connect MetaMask, verify Portaldot V3 Testnet, deploy the proof
+                contract, and submit a signed pulse transaction. No private key
+                is requested or stored.
               </p>
               <div className="mt-2 space-y-1 text-[11px] text-slate-500">
-  <p>You'll need testnet tPOT for transaction gas.</p>
-  <p>MetaMask uses an EVM address (0x...). Hackathon registration may require your native SS58 address (5...).</p>
-</div>
+                <p>You'll need testnet tPOT for transaction gas.</p>
+                <p>
+                  MetaMask uses an EVM address (0x...). Hackathon registration
+                  may require your native SS58 address (5...).
+                </p>
+              </div>
             </div>
             <button
               onClick={handleConnectWallet}
@@ -666,50 +755,65 @@ export default function App() {
               className="shrink-0 bg-emerald-500/10 hover:bg-emerald-500/20 text-[#00E599] border border-emerald-500/30 text-xs font-semibold px-4 py-2 rounded-lg transition disabled:opacity-50"
             >
               {walletBusy
-  ? "Connecting…"
-  : walletVerified && walletAccount
-    ? `${walletAccount.slice(0, 6)}…${walletAccount.slice(-4)} ✓`
-    : walletAccount
-      ? "Verify network"
-      : "Connect MetaMask"}
+                ? "Connecting…"
+                : walletVerified && walletAccount
+                  ? `${walletAccount.slice(0, 6)}…${walletAccount.slice(-4)} ✓`
+                  : walletAccount
+                    ? "Verify network"
+                    : "Connect MetaMask"}
             </button>
           </div>
           <div className="mt-3 flex items-center gap-2 text-xs">
-  <span
-    className={`h-2 w-2 rounded-full ${
-      walletVerified
-        ? "bg-emerald-400"
-        : walletAccount
-          ? "bg-amber-400"
-          : "bg-slate-500"
-    }`}
-  />
-  <span className="text-slate-400">
-    {walletVerified
-      ? "Connected · Portaldot V3 Testnet verified"
-      : walletAccount
-        ? "Account detected · Network verification required"
-        : "Wallet not connected"}
-  </span>
-</div>
+            <span
+              className={`h-2 w-2 rounded-full ${
+                walletVerified
+                  ? "bg-emerald-400"
+                  : walletAccount
+                    ? "bg-amber-400"
+                    : "bg-slate-500"
+              }`}
+            />
+            <span className="text-slate-400">
+              {walletVerified
+                ? "Connected · Portaldot V3 Testnet verified"
+                : walletAccount
+                  ? "Account detected · Network verification required"
+                  : "Wallet not connected"}
+            </span>
+          </div>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <button
               onClick={handleDeployProof}
-              disabled={walletBusy || !walletAccount || !walletVerified || Boolean(proof?.contractAddress)}
+              disabled={
+                walletBusy ||
+                !walletAccount ||
+                !walletVerified ||
+                Boolean(proof?.contractAddress)
+              }
               className="bg-[#0B0E14] border border-slate-800 hover:border-[#00E599]/60 rounded-xl p-4 text-left transition disabled:opacity-50"
             >
-              <span className="block text-xs font-semibold text-slate-200">1. Deploy proof contract</span>
+              <span className="block text-xs font-semibold text-slate-200">
+                1. Deploy proof contract
+              </span>
               <span className="block text-[11px] text-slate-500 mt-1">
                 Requires a wallet confirmation and testnet gas.
               </span>
             </button>
             <button
               onClick={handleSendProof}
-              disabled={walletBusy || !walletAccount || !walletVerified || !proof?.contractAddress || Boolean(proof?.pulseTxHash)}
+              disabled={
+                walletBusy ||
+                !walletAccount ||
+                !walletVerified ||
+                !proof?.contractAddress ||
+                Boolean(proof?.pulseTxHash)
+              }
               className="bg-[#0B0E14] border border-slate-800 hover:border-[#00E599]/60 rounded-xl p-4 text-left transition disabled:opacity-50"
             >
-              <span className="block text-xs font-semibold text-slate-200">2. Send on-chain pulse</span>
+              <span className="block text-xs font-semibold text-slate-200">
+                2. Send on-chain pulse
+              </span>
               <span className="block text-[11px] text-slate-500 mt-1">
                 A separate signed transaction records the demo interaction.
               </span>
@@ -718,10 +822,16 @@ export default function App() {
 
           {proof?.contractAddress && (
             <div className="mt-4 space-y-2 rounded-xl border border-slate-800/80 bg-[#0B0E14] p-3.5 text-xs font-mono">
-              <div className="break-all text-slate-300">Contract: {proof.contractAddress}</div>
-              <div className="break-all text-slate-500">Deployment tx: {proof.hash}</div>
+              <div className="break-all text-slate-300">
+                Contract: {proof.contractAddress}
+              </div>
+              <div className="break-all text-slate-500">
+                Deployment tx: {proof.hash}
+              </div>
               {proof.pulseTxHash && (
-                <div className="break-all text-slate-500">Pulse tx: {proof.pulseTxHash}</div>
+                <div className="break-all text-slate-500">
+                  Pulse tx: {proof.pulseTxHash}
+                </div>
               )}
               <a
                 className="inline-block text-[#00E599] hover:underline"
@@ -734,7 +844,11 @@ export default function App() {
             </div>
           )}
           {walletMessage && (
-            <div className="mt-3 text-xs text-slate-300" role="status" aria-live="polite">
+            <div
+              className="mt-3 text-xs text-slate-300"
+              role="status"
+              aria-live="polite"
+            >
               {walletMessage}
             </div>
           )}
@@ -748,11 +862,15 @@ export default function App() {
                 Validator &amp; Node Heartbeat Alert
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Stores a webhook endpoint locally for a heartbeat worker to deliver downtime alerts.
+                Stores a webhook endpoint locally for a heartbeat worker to
+                deliver downtime alerts.
               </p>
             </div>
 
-            <form onSubmit={handleSaveWebhook} className="flex gap-2 w-full md:w-auto">
+            <form
+              onSubmit={handleSaveWebhook}
+              className="flex gap-2 w-full md:w-auto"
+            >
               <input
                 type="text"
                 placeholder="https://discord.com/api/webhooks/..."
@@ -770,11 +888,13 @@ export default function App() {
           </div>
           {webhookSaved && (
             <div className="mt-3 text-xs text-[#00E599] flex items-center gap-1.5 font-mono">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Webhook endpoint saved in this browser.
+              <CheckCircle2 className="w-3.5 h-3.5" /> Webhook endpoint saved in
+              this browser.
             </div>
           )}
           <div className="mt-3 text-[11px] text-slate-500 font-mono">
-            Delivery requires a background worker; this dashboard only persists the endpoint locally.
+            Delivery requires a background worker; this dashboard only persists
+            the endpoint locally.
           </div>
         </section>
 
@@ -788,18 +908,35 @@ export default function App() {
               ["Chain", chainInfo?.chain],
               ["Client", chainInfo?.client],
               ["Runtime spec", chainInfo?.specVersion],
-              ["Token", chainInfo ? `${chainInfo.tokenSymbol} (${chainInfo.tokenDecimals} decimals)` : null],
+              [
+                "Token",
+                chainInfo
+                  ? `${chainInfo.tokenSymbol} (${chainInfo.tokenDecimals} decimals)`
+                  : null,
+              ],
               ["SS58 prefix", chainInfo?.ss58Format],
-              ["Finalized head", finalizedBlock === null ? null : formatBlock(finalizedBlock)],
+              [
+                "Finalized head",
+                finalizedBlock === null ? null : formatBlock(finalizedBlock),
+              ],
             ].map(([label, value]) => (
-              <div key={label} className="bg-[#0B0E14] border border-slate-800/80 p-3.5 rounded-xl">
-                <div className="text-[10px] text-slate-500 uppercase">{label}</div>
-                <div className="text-slate-200 mt-1 truncate">{value ?? "—"}</div>
+              <div
+                key={label}
+                className="bg-[#0B0E14] border border-slate-800/80 p-3.5 rounded-xl"
+              >
+                <div className="text-[10px] text-slate-500 uppercase">
+                  {label}
+                </div>
+                <div className="text-slate-200 mt-1 truncate">
+                  {value ?? "—"}
+                </div>
               </div>
             ))}
           </div>
           <div className="mt-4 rounded-xl border border-slate-800/80 bg-[#0B0E14] p-3.5 text-xs font-mono">
-            <div className="text-[10px] text-slate-500 uppercase">Portaldot V3 Testnet · EVM</div>
+            <div className="text-[10px] text-slate-500 uppercase">
+              Portaldot V3 Testnet · EVM
+            </div>
             <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-slate-300">
               <span>Chain ID: {PORTALDOT_TESTNET.chainId}</span>
               <a
@@ -824,7 +961,10 @@ export default function App() {
       </main>
 
       <footer className="max-w-7xl mx-auto mt-12 pt-6 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-3">
-        <div>Built for Portaldot Hacker House 2026 • Track 3 (Node Operations &amp; Tooling)</div>
+        <div>
+          Built for Portaldot Hacker House 2026 • Track 3 (Node Operations &amp;
+          Tooling)
+        </div>
         <div className="flex items-center gap-4">
           <span className="font-mono">Live data via @polkadot/api</span>
           <span className="font-mono">Open Source (MIT)</span>
