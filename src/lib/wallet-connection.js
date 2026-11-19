@@ -20,6 +20,7 @@ export function createWalletConnectionHandler({
 
     const wallet = getInjectedWallet();
     if (!wallet) {
+      setWalletBusy(false);
       setWalletAccount(null);
       setWalletMessage(
         "No injected EVM wallet was found. Install or unlock MetaMask, then retry.",

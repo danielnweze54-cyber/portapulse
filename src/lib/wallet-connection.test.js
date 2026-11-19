@@ -40,12 +40,14 @@ function setup({ ensureNetwork = async () => {}, onAccountsRequest } = {}) {
     },
   };
 
+  let walletAvailable = true;
+
   const handleConnectWallet = createWalletConnectionHandler({
     walletAttemptRef,
     walletEventAccountRef,
     walletEventSeenRef,
     walletAccountEventRef,
-    getInjectedWallet: () => wallet,
+    getInjectedWallet: () => (walletAvailable ? wallet : null),
     ensurePortaldotTestnet: ensureNetwork,
     targetChainId: TARGET_CHAIN,
     setWalletAccount: (value) => {
@@ -62,16 +64,18 @@ function setup({ ensureNetwork = async () => {}, onAccountsRequest } = {}) {
     },
   });
 
-  return {
+    return {
     handleConnectWallet,
     walletAttemptRef,
     walletEventAccountRef,
     walletEventSeenRef,
     walletAccountEventRef,
+    setWalletAvailable: (value) => {
+      walletAvailable = value;
+    },
     state,
   };
 }
-
 test("does not verify account A if the account changes to B during network verification", async () => {
   const gate = deferred();
   const app = setup({ ensureNetwork: () => gate.promise });
@@ -198,5 +202,27 @@ test("does not clear a new account when network verification rejects after an ac
 
   assert.equal(app.state.account, ACCOUNT_B);
   assert.equal(app.state.verified, false);
+  assert.equal(app.state.busy, false);
+});
+test("clears busy state when a newer attempt finds no injected wallet", async () => {
+  const gate = deferred();
+  const app = setup({ ensureNetwork: () => gate.promise });
+
+  const oldConnection = app.handleConnectWallet();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(app.state.busy, true);
+
+  app.setWalletAvailable(false);
+
+  await app.handleConnectWallet();
+
+  assert.equal(app.state.busy, false);
+  assert.equal(app.state.account, null);
+  assert.match(app.state.message, /No injected EVM wallet was found/);
+
+  gate.resolve();
+  await oldConnection;
+
   assert.equal(app.state.busy, false);
 });
